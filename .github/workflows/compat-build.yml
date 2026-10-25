@@ -1,0 +1,89 @@
+name: Build (fork, keep local patches)
+
+# 在 fork 里手动构建 APK 并作为 Actions 工件下载，不创建 Release、不推送 TG/LSPosed。
+# Actions 页面 → Build (fork) → Run workflow，右上角 "Use workflow from" 可切换分支或 tag。
+on:
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 'versionName 后缀（留空则用仓库原版本号）'
+        required: false
+        default: '-diag'
+        type: string
+      flavor:
+        description: '构建变体'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - releaseFast
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 2
+
+      - name: Resolve version
+        id: version
+        run: |
+          NAME=$(grep '^appVersionName=' android/gradle.properties | cut -d'=' -f2)
+          CODE=$(grep '^appVersionCode=' android/gradle.properties | cut -d'=' -f2)
+          SUFFIX="${{ github.event.inputs.version_suffix }}"
+          BUILD_NAME="${NAME}${SUFFIX}"
+          BUILD_CODE=$CODE
+          echo "version_name=$NAME" >> $GITHUB_OUTPUT
+          echo "build_version_name=$BUILD_NAME" >> $GITHUB_OUTPUT
+          echo "build_version_code=$BUILD_CODE" >> $GITHUB_OUTPUT
+          echo "::notice::Building $BUILD_NAME ($BUILD_CODE) from ${GITHUB_REF_NAME}"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4.3.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4.1.0
+        with:
+          gradle-version: wrapper
+          cache-disabled: false
+
+      - name: Decode keystore
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
+
+      - name: Build APK
+        env:
+          KEYSTORE_PATH: ${{ secrets.KEYSTORE_BASE64 != '' && 'release.jks' || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          bash android/gradlew -p android :app:assemble${{ github.event.inputs.flavor == 'releaseFast' && 'ReleaseFast' || 'Release' }} \
+            -PbuildTime="$(date -u '+%Y-%m-%d %H:%M')" \
+            -PappVersionName="${{ steps.version.outputs.build_version_name }}" \
+            -PappVersionCode="${{ steps.version.outputs.build_version_code }}"
+
+      - name: Rename APK
+        run: |
+          ls build/app/outputs/apk/*/*.apk
+          cp build/app/outputs/apk/*/app-*.apk \
+            "HyperIsland-v${{ steps.version.outputs.build_version_name }}-${{ github.ref_name }}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: HyperIsland-v${{ steps.version.outputs.build_version_name }}
+          path: HyperIsland-v*.apk
+          retention-days: 30
+          compression-level: 0

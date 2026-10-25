@@ -61,6 +61,7 @@ import io.github.hyperisland.xposed.hook.SystemUI.extensions.UnlockAllFocusHook
 import io.github.hyperisland.xposed.hook.UnlockFocusAuthHook
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModule
+import io.github.hyperisland.xposed.diag.IslandCompatDiag
 import io.github.hyperisland.xposed.utils.HookUtils
 
 /**
@@ -74,6 +75,7 @@ class HyperIslandModule : XposedModule() {
     override fun onPackageLoaded(param: PackageLoadedParam) {
         initializeConfigManager()
         log { "onPackageLoaded: pkg=${param.packageName}" }
+        IslandCompatDiag.report(this, param)
         
         when (param.packageName) {
             "com.android.systemui" -> {
