@@ -1,6 +1,7 @@
 package io.github.hyperisland.xposed
 
 import android.util.Log
+import io.github.hyperisland.xposed.diag.IslandCompatDiag
 import io.github.hyperisland.xposed.hook.SystemUI.BigIslandMinWidthHook
 import io.github.hyperisland.xposed.hook.SystemUI.IslandIconHook
 import io.github.hyperisland.xposed.hook.SystemUI.DynamicIslandVisibilityHook
@@ -54,6 +55,7 @@ class HyperIslandModule : XposedModule() {
     override fun onPackageLoaded(param: PackageLoadedParam) {
         initializeConfigManager()
         log("onPackageLoaded: pkg=${param.packageName}")
+        IslandCompatDiag.report(this, param)
         
         when (param.packageName) {
             "com.android.systemui" -> {

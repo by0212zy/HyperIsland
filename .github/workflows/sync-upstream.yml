@@ -1,0 +1,96 @@
+name: Sync Upstream
+
+# 把上游 1812z/HyperIsland 的更新拉进本 fork，同时保留本地补丁（IslandCompatDiag）。
+# 手动触发时在 Actions 页面点 "Sync Upstream / Run workflow"，可指定要同步的 ref（分支或 tag）。
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: '上游分支或 tag（如 main / v3.2.2）'
+        required: false
+        default: 'main'
+        type: string
+      create_pr_when_conflict:
+        description: '冲突时改为开 PR（否则工作流失败并提示）'
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # 每周一 18:00 (UTC) 自动同步一次 main
+    - cron: '0 18 * * 1'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          REF="${{ github.event.inputs.upstream_ref || 'main' }}"
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+          git remote add upstream https://github.com/1812z/HyperIsland.git || true
+          git fetch upstream --tags --force "$REF" || {
+            echo "::error::无法从上游拉取 $REF"
+            exit 1
+          }
+          git rev-parse "refs/tags/$REF" >/dev/null 2>&1 \
+            && UPSTREAM="refs/tags/$REF" \
+            || UPSTREAM="refs/remotes/upstream/$REF"
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          git log --oneline -3 "$UPSTREAM" || true
+
+      - name: Try merge
+        id: merge
+        continue-on-error: true
+        run: |
+          git merge --no-edit --no-ff "${{ steps.fetch.outputs.upstream }}" \
+            -m "Merge upstream ${{ steps.fetch.outputs.ref }} into main
+
+            保留本 fork 的兼容性诊断补丁 (IslandCompatDiag)。"
+          echo "status=$?" >> $GITHUB_OUTPUT
+
+      - name: Push if merged
+        if: steps.merge.outcome == 'success'
+        run: |
+          git push origin main
+          echo "::notice::已同步上游 ${{ steps.fetch.outputs.ref }} 到 main。"
+
+      - name: Handle conflict
+        if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git merge --abort || true
+          if [ "${{ github.event.inputs.create_pr_when_conflict }}" != "false" ]; then
+            BRANCH="upstream-sync/${{ github.run_number }}"
+            git checkout -b "$BRANCH"
+            git merge --no-edit --no-ff "${{ steps.fetch.outputs.upstream }}" || true
+            git push origin "$BRANCH"
+            gh pr create \
+              --repo "${{ github.repository }}" \
+              --base main \
+              --head "$BRANCH" \
+              --title "Upstream sync: ${{ steps.fetch.outputs.ref }} (#${{ github.run_number }})" \
+              --body "自动同步上游 ${{ steps.fetch.outputs.ref }} 时与本 fork 的补丁发生冲突，需要人工解决冲突后合并。" \
+              || echo "PR 创建失败，请手动处理"
+            echo "::warning::存在冲突，已开 PR 待人工处理"
+          else
+            echo "::error::与上游 ${{ steps.fetch.outputs.ref }} 合并冲突，请手动解决"
+            exit 1
+          fi
