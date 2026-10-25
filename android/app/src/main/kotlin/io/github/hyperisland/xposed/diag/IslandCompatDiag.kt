@@ -1,23 +1,25 @@
 package io.github.hyperisland.xposed.diag
 
 import android.os.Build
-import android.util.Log
 import io.github.hyperisland.xposed.ConfigManager
+import io.github.hyperisland.xposed.logError
+import io.github.hyperisland.xposed.logWarn
+import io.github.hyperisland.xposed.utils.HookUtils
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 
 /**
- * 一次性兼容性自检：把「Hook 为什么看起来没生效」的常见静默原因显式写进 logcat。
+ * 兼容性自检：把「功能为什么没生效」的判定依据一次性打到 logcat。
  *
- * 常驻轮廓 / 外圈光效失效通常只有三个原因，且在不开日志时都表现为「开关没反应、也不报错」：
- *   1. 读不到 App 侧配置：XposedModule.getRemotePreferences 不可用时，ConfigManager 只打一条
- *      WARN 就继续运行，而相关开关的默认值恰好都是「关」，于是现象像功能坏了；
- *   2. 超级岛类不在宿主的 ClassLoader 里（它们来自 miui.systemui.plugin 插件 dex），
- *      HookUtils 的 loader 发现失败会导致 hook 根本没安装，失败路径是
- *      ClassNotFoundException 被 runCatching 静默吞掉；
- *   3. 运行时流程差异（extras 桥接 / state 判定 / 材质替换）。
+ * 用 WARN 级别是刻意的：模块里绝大部分诊断走 BaseHook.log / logDebug，
+ * 需要先在 App 里打开「调试日志」；而如果 App 侧配置根本读不进来，
+ * 这个开关永远拿不到 true，形成死锁。这里绕开开关直接输出。
  *
- * 只读诊断，不修改任何既有行为。
+ * 输出：
+ *   1) [env]  环境：SDK、远程配置通道是否可用、两个开关的实际生效值；
+ *   2) [api]  超级岛 hook 目标的类/成员逐个探测结果。
+ *
+ * 只读，不修改任何既有行为。
  */
 object IslandCompatDiag {
 
@@ -35,53 +37,101 @@ object IslandCompatDiag {
     private const val ABS_SHADER =
         "com.mi.widget.core.AbsShader"
 
-    @Volatile private var reported = false
+    /** 运行时要逐一确认的 hook 目标：类名 -> 需要存在的成员（方法或字段）名。 */
+    private val API_CHECKS: List<Pair<String, List<String>>> = listOf(
+        CONTENT_VIEW to listOf(
+            "isExpanded", "backgroundView", "state",
+            "updateMedianLuma", "updateDarkLightMode", "updateBackgroundBg",
+            "getBigIslandView", "getExpandedView",
+    ),
+        BACKGROUND_VIEW to listOf("setDrawable", "getDrawable", "getStokeWidth"),
+        GLOW_VIEW to listOf(
+            "startGlowEffect", "stopGlowEffect", "setGlowEffectPosition",
+            "initGlowEffect", "setAlphaOfGlowEffect",
+    ),
+        FOCUS_CONTROLLER to listOf("setUpDynamicIslandDataBundle"),
+        ABS_SHADER to listOf("readRawString"),
+    )
+
+    @Volatile private var probed = false
 
     fun report(module: XposedModule, param: PackageLoadedParam) {
         if (param.packageName != "com.android.systemui") return
-        if (reported) return
-        reported = true
+        reportEnvironment(module, param)
+        HookUtils.hookDynamicClassLoaders(module, ClassLoader.getSystemClassLoader()) { loader ->
+            probeIslandApi(module, loader)
+        }
+    }
 
-        val readable = prefsReadable()
+    private fun reportEnvironment(module: XposedModule, param: PackageLoadedParam) {
+        val readable = ConfigManager.getString("pref_default_island_outer_glow", MISSING) != MISSING
+        val islandMode = ConfigManager.getString("pref_island_outline_mode", MISSING)
+        val focusMode = ConfigManager.getString("pref_focus_outline_mode", MISSING)
+        val glow = ConfigManager.getString("pref_default_island_outer_glow", MISSING)
+        val debug = ConfigManager.getBoolean("pref_debug_log", false)
+
         val lines = listOf(
             "sdk=${Build.VERSION.SDK_INT} release=${Build.VERSION.RELEASE}",
-            "remotePrefs=" + if (readable) "ok" else "UNAVAILABLE(开关全部回退默认值)",
-            "island_outline_mode=" + read("pref_island_outline_mode"),
-            "focus_outline_mode=" + read("pref_focus_outline_mode"),
-            "legacy_always_show_island_outline=${ConfigManager.getBoolean("pref_always_show_island_outline", false)}",
-            "default_island_outer_glow=" + read("pref_default_island_outer_glow"),
+            "remotePrefs=" + if (readable) "ok" else "UNAVAILABLE(所有开关回退默认值)",
+            "island_outline_mode=" + show(islandMode),
+            "focus_outline_mode=" + show(focusMode),
+            "default_island_outer_glow=" + show(glow),
+            "debug_log=$debug",
             "hostLoader: contentView=${probe(param.defaultClassLoader, CONTENT_VIEW)}" +
                 " backgroundView=${probe(param.defaultClassLoader, BACKGROUND_VIEW)}" +
                 " glowView=${probe(param.defaultClassLoader, GLOW_VIEW)}" +
                 " focusController=${probe(param.defaultClassLoader, FOCUS_CONTROLLER)}" +
                 " absShader=${probe(param.defaultClassLoader, ABS_SHADER)}",
-            "note: 超级岛类通常来自 miui.systemui.plugin 插件 dex，" +
-                "hostLoader 全为 missing 属正常，实际结果请配合 HyperIsland[LoaderDiscovery] 判断",
         )
-        val text = lines.joinToString(" | ")
-        module.log(Log.WARN, TAG, text)
-
+        module.logWarn(TAG, "[env] " + lines.joinToString(" | "))
         if (!readable) {
-            module.log(Log.ERROR, 
+            module.logError(
                 TAG,
-                "无法读取模块配置：当前框架不支持 RemotePreferences(libxposed api 102)。" +
-                    "请升级 LSPosed 到支持 libxposed 102 的版本，否则 App 内的开关无法传递到 SystemUI 进程，" +
-                    "默认值全部为关闭。ConfigManager 的详细原因见上方 HyperIsland[ConfigManager] 日志。",
+                "读不到模块配置：当前框架不支持 XposedModule.getRemotePreferences" +
+                    "(libxposed api 102)。App 内开关无法传入 SystemUI 进程，全部按默认值处理；" +
+                    "而『常驻岛轮廓』『外圈光效』的默认值都是关闭，于是表现为完全无反应。" +
+                    "请升级 LSPosed 到支持 libxposed 102 的版本。",
             )
         }
     }
 
-    /** 远程配置不可用时，所有读取都会返回调用方传入的默认值。 */
-    private fun prefsReadable(): Boolean =
-        ConfigManager.getString("pref_default_island_outer_glow", MISSING) != MISSING
+    private fun probeIslandApi(module: XposedModule, loader: ClassLoader) {
+        if (probed) return
+        if (!HookUtils.isIslandLoaderReady(loader)) return
+        probed = true
 
-    private fun read(key: String): String {
-        val value = ConfigManager.getString(key, MISSING)
-        return if (value == MISSING) "unset" else value
+        val lines = API_CHECKS.map { (className, members) ->
+            val short = className.substringAfterLast('.')
+            val clazz = runCatching { Class.forName(className, false, loader) }.getOrNull()
+            if (clazz == null) {
+                "$short=CLASS_MISSING"
+            } else {
+                val available = mutableSetOf<String>()
+                collectMembers(clazz, available)
+                val text = members.joinToString(",") { m ->
+                    // Kotlin internal 成员带 $<module>_release 后缀，用前缀匹配
+                    val hit = available.any { it == m || it.startsWith(m + "$") }
+                    "$m=${if (hit) "OK" else "MISSING"}"
+                }
+                "$short: $text"
+            }
+        }
+        module.logWarn(TAG, "[api] " + lines.joinToString(" | "))
+    }
+
+    private fun collectMembers(clazz: Class<*>, out: MutableSet<String>) {
+        var current: Class<*>? = clazz
+        while (current != null) {
+            out.addAll(current.declaredMethods.map { it.name })
+            out.addAll(current.declaredFields.map { it.name })
+            current = current.superclass
+        }
     }
 
     private fun probe(loader: ClassLoader, className: String): String = runCatching {
         Class.forName(className, false, loader)
         "found"
     }.getOrDefault("missing")
+
+    private fun show(value: String): String = if (value == MISSING) "?" else "'$value'"
 }
