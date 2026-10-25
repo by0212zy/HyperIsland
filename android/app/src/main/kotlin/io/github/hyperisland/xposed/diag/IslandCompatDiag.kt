@@ -1,6 +1,7 @@
 package io.github.hyperisland.xposed.diag
 
 import android.os.Build
+import android.util.Log
 import io.github.hyperisland.xposed.ConfigManager
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
@@ -58,10 +59,10 @@ object IslandCompatDiag {
                 "hostLoader 全为 missing 属正常，实际结果请配合 HyperIsland[LoaderDiscovery] 判断",
         )
         val text = lines.joinToString(" | ")
-        module.logWarn(TAG, text)
+        module.log(Log.WARN, TAG, text)
 
         if (!readable) {
-            module.logError(
+            module.log(Log.ERROR, 
                 TAG,
                 "无法读取模块配置：当前框架不支持 RemotePreferences(libxposed api 102)。" +
                     "请升级 LSPosed 到支持 libxposed 102 的版本，否则 App 内的开关无法传递到 SystemUI 进程，" +
