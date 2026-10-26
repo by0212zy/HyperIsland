@@ -70,12 +70,25 @@ object IslandCompatDiag {
         val glow = ConfigManager.getString("pref_default_island_outer_glow", MISSING)
         val debug = ConfigManager.getBoolean("pref_debug_log", false)
 
+        val singleColor = ConfigManager.getBoolean("pref_outer_glow_single_color", false)
+        val range = ConfigManager.getInt("pref_outer_glow_range", 0)
+        val baseColor = ConfigManager.getString("pref_outer_glow_base_color", "")
+        val forceIsland = ConfigManager.getBoolean("pref_default_force_island_outer_glow", false)
+        val forceOuter = ConfigManager.getBoolean("pref_default_force_outer_glow", false)
+        val defaultOuter = ConfigManager.getString("pref_default_outer_glow", MISSING)
+
         val lines = listOf(
             "sdk=${Build.VERSION.SDK_INT} release=${Build.VERSION.RELEASE}",
             "remotePrefs=" + if (readable) "ok" else "UNAVAILABLE(所有开关回退默认值)",
             "island_outline_mode=" + show(islandMode),
             "focus_outline_mode=" + show(focusMode),
+            "outer_glow_single_color=$singleColor",
+            "outer_glow_range=$range%",
+            "outer_glow_base_color='$baseColor'",
             "default_island_outer_glow=" + show(glow),
+            "default_outer_glow=" + show(defaultOuter),
+            "force_island_outer_glow=$forceIsland",
+            "force_outer_glow=$forceOuter",
             "debug_log=$debug",
             "hostLoader: contentView=${probe(param.defaultClassLoader, CONTENT_VIEW)}" +
                 " backgroundView=${probe(param.defaultClassLoader, BACKGROUND_VIEW)}" +
@@ -84,6 +97,18 @@ object IslandCompatDiag {
                 " absShader=${probe(param.defaultClassLoader, ABS_SHADER)}",
         )
         module.logWarn(TAG, "[env] " + lines.joinToString(" | "))
+        // 光效启用判定提示：单色光效开关是全局启用信号（对系统原生岛也生效），
+        // 便于快速判断「外圈光效」到底有没有被启用。
+        val glowWillRun = readable && (singleColor || forceIsland || forceOuter ||
+                (glow != "off" && glow != MISSING) || (defaultOuter != "off" && defaultOuter != MISSING))
+        if (readable) {
+            module.logWarn(
+                TAG,
+                "外圈光效启用判定: singleColor=$singleColor || forceIsland=$forceIsland || " +
+                    "forceOuter=$forceOuter || defaultIsland='$glow' || defaultOuter='$defaultOuter' " +
+                    "=> ${if (glowWillRun) "会播放" else "不会播放(全部 off，需在 outline 页开启『单色光效』或打开 force 开关)"}",
+            )
+        }
         if (!readable) {
             module.logError(
                 TAG,
