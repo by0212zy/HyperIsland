@@ -562,6 +562,10 @@ object IslandOuterGlowHook : BaseHook() {
     private fun resolveForcedGlobalGlowTarget(extras: Bundle?, mode: Int): OwnedGlowTarget? {
         val pkg = resolveSourcePkg(extras) ?: ""
         val channelId = resolveSourceChannelId(extras) ?: ""
+        // 「单色光效」开关（appearance_outline 页面）应作为全局启用信号：对系统原生岛
+        // （非 hyperisland 拥有、非 media 频道）也播放外圈光效。否则该开关只被当成渲染
+        // 参数（single_color 风格），光效始终因 owner 校验被跳过，用户开启后看不到任何效果。
+        val singleColorEnabled = ConfigManager.getBoolean("pref_outer_glow_single_color", false)
         val enabled = when (mode) {
             GLOW_MODE_STATUS -> resolveForcedGlowEnabled(
                 channelMode = channelSettingOrDefault(
@@ -571,7 +575,7 @@ object IslandOuterGlowHook : BaseHook() {
                 ),
                 defaultMode = ConfigManager.getString("pref_default_island_outer_glow", "off"),
                 globalKey = "pref_default_force_island_outer_glow",
-            )
+            ) || singleColorEnabled
             GLOW_MODE_EXPAND -> resolveForcedGlowEnabled(
                 channelMode = channelSettingOrDefault(
                     pkg,
@@ -580,7 +584,7 @@ object IslandOuterGlowHook : BaseHook() {
                 ),
                 defaultMode = ConfigManager.getString("pref_default_outer_glow", "off"),
                 globalKey = "pref_default_force_outer_glow",
-            )
+            ) || singleColorEnabled
             else -> false
         }
         if (!enabled) return null
